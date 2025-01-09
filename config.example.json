@@ -1,0 +1,15 @@
+{
+  "LatBounds": {
+    "start": -90.0,
+    "stop": 90.0
+  },
+  "LonBounds": {
+    "start": -180.0,
+    "stop": 180.0
+  },
+  "Step": 0.5,
+  "Chunks": 20,
+  "OverpassUrl": "http://88.99.57.50:12346/api/interpreter",
+  "ContinueWork": true,
+  "LastChunkIndex": -1
+}
