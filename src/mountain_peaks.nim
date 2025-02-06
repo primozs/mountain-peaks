@@ -82,12 +82,13 @@ proc jsonToLocations*(data: JsonNode): seq[Location] {.raises: [].} =
   except Exception as e:
     echo e.repr
 
-proc processBox(overpassUrl: string, box: Box, cb: proc ()): Future[seq[
+proc processBoxPeak(overpassUrl: string, box: Box, cb: proc ()): Future[seq[
         Location]] {.async.} =
+
   let query = fmt"""
     [out:json][timeout:25];
     (
-      node["name"]["ele"]["natural"~"peak|hill|ridge|saddle|volcano"]
+      node["name"]["ele"]["natural"~"peak|hill|ridge|volcano"]
       ({box.latMin},{box.lonMin},{box.latMax},{box.lonMax});
     );
     out center;
@@ -97,6 +98,20 @@ proc processBox(overpassUrl: string, box: Box, cb: proc ()): Future[seq[
   cb()
   result = locs
 
+proc processBoxPass(overpassUrl: string, box: Box, cb: proc ()): Future[seq[
+        Location]] {.async.} =
+  let query = fmt"""
+    [out:json][timeout:25];
+    (
+      node["name"]["ele"]["natural"~"mountain_pass|saddle"]
+      ({box.latMin},{box.lonMin},{box.latMax},{box.lonMax});
+    );
+    out center;
+  """
+  let resJson = await overpassQueryAsync(query, overpassUrl)
+  let locs = jsonToLocations(resJson)
+  cb()
+  result = locs
 
 iterator chunckedBoxes(config: Config, data: seq[FromTo]): tuple[i: int, b: seq[Box]] =
   var count = -1
@@ -113,7 +128,7 @@ iterator chunckedBoxes(config: Config, data: seq[FromTo]): tuple[i: int, b: seq[
     yield (count, boxChunk)
 
 
-proc main() {.raises: [].} =
+proc processPeaks() {.raises: [].} =
   try:
     let p = initProcessor(name = "peaks")
     var config = Config()
@@ -123,7 +138,7 @@ proc main() {.raises: [].} =
 
     config = loadConfig[Config](p)
 
-    let outputFilePath = p.outputDir / "data.csv"
+    let outputFilePath = p.outputDir / "peak.csv"
     if outputFilePath.fileExists() and config.ContinueWork == false:
       outputFilePath.removeFile()
 
@@ -143,7 +158,7 @@ proc main() {.raises: [].} =
           var results: seq[Future[seq[Location]]]
           for box in boxes:
             try:
-              let res = processBox(config.OverpassUrl, box, progressCalc)
+              let res = processBoxPeak(config.OverpassUrl, box, progressCalc)
               results.add res
             except Exception as e:
               logError(fmt"{box.repr=}: ", e.repr)
@@ -153,7 +168,60 @@ proc main() {.raises: [].} =
             locations.add i
 
           let hasHeader = chunkIndex == 0
-          saveCsvData[seq[Location]](p, "data", locations, hasHeader)
+          saveCsvData[seq[Location]](p, "peak", locations, hasHeader)
+
+          config.LastChunkIndex = chunkIndex
+          saveConfig(p, config)
+          sleep(10)
+
+        # processing finished, reset done index
+        config.LastChunkIndex = -1
+        saveConfig(p, config)
+  except Exception as e:
+    logError(e.repr)
+
+
+proc processPasses() {.raises: [].} =
+  try:
+    let p = initProcessor(name = "passes")
+    var config = Config()
+
+    if not p.configPath.fileExists():
+      saveConfig[Config](p, config)
+
+    config = loadConfig[Config](p)
+
+    let outputFilePath = p.outputDir / "pass.csv"
+    if outputFilePath.fileExists() and config.ContinueWork == false:
+      outputFilePath.removeFile()
+
+    let minLatLons = product(
+     arange(config.LatBounds, config.Step),
+     arange(config.LonBounds, config.Step)
+    )
+
+    timing "Total duration":
+      progressBar minLatLons.len:
+        for (chunkIndex, boxes) in chunckedBoxes(config, minLatLons):
+          if config.ContinueWork and chunkIndex <= config.LastChunkIndex:
+            progressCalc()
+            continue
+
+          var locations: seq[Location]
+          var results: seq[Future[seq[Location]]]
+          for box in boxes:
+            try:
+              let res = processBoxPass(config.OverpassUrl, box, progressCalc)
+              results.add res
+            except Exception as e:
+              logError(fmt"{box.repr=}: ", e.repr)
+
+          let awaitedResults = waitFor all(results)
+          for i in awaitedResults:
+            locations.add i
+
+          let hasHeader = chunkIndex == 0
+          saveCsvData[seq[Location]](p, "pass", locations, hasHeader)
 
           config.LastChunkIndex = chunkIndex
           saveConfig(p, config)
@@ -167,6 +235,7 @@ proc main() {.raises: [].} =
 
 
 when isMainModule:
-  main()
+  processPeaks()
+  processPasses()
 
 
